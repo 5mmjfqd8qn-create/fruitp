@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fruit Predictor (Swipe + Time)</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; background: #f6f7fb; color: #111; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: white; border-radius: 16px; padding: 20px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.08);
+      user-select: none;
+      touch-action: pan-y; /* allow vertical scroll, handle horizontal swipe ourselves */
+    }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    p { margin: 8px 0; line-height: 1.4; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin: 16px 0 14px;
+    }
+    .item {
+      background: #f2f4ff;
+      border: 1px solid #e1e6ff;
+      border-radius: 12px;
+      padding: 10px;
+      text-align: center;
+      font-weight: 600;
+    }
+    .hint {
+      margin-top: 10px;
+      padding: 12px;
+      border-radius: 12px;
+      background: #f1f5ff;
+      border: 1px solid #dbe6ff;
+      font-size: 14px;
+      color: #223;
+    }
+    .progress {
+      display:flex; justify-content:space-between; margin-top: 10px;
+      color:#333; font-size: 13px;
+    }
+    .timerRow {
+      display:flex; justify-content:space-between; align-items:center;
+      margin-top: 10px; gap: 10px;
+      font-size: 13px; color:#333;
+    }
+    .pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background:#eef2f7;
+      border: 1px solid #dde3ee;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .result {
+      font-size: 28px;
+      font-weight: 900;
+      text-align: center;
+      padding: 16px;
+      background: #fff7d6;
+      border: 1px solid #ffe08a;
+      border-radius: 14px;
+      margin-top: 14px;
+    }
+    .btnRow { display:flex; justify-content:center; margin-top: 14px; }
+    button {
+      border: 0; border-radius: 12px; padding: 12px 16px;
+      font-size: 16px; font-weight: 700; cursor: pointer;
+      background:#111; color:#fff;
+    }
+    .swipeOverlay {
+      margin-top: 8px;
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" id="app"></div>
+    <div class="swipeOverlay" id="swipeOverlay"></div>
+  </div>
+
+  <script>
+    // --- CONFIG ---
+    const fruits = [
+      "Apple", "Banana", "Cherry", "Date",
+      "Grape", "Kiwi", "Lemon", "Mango",
+      "Orange", "Peach", "Pear", "Plum"
+    ];
+    const TOTAL_PAGES = 4;
+    const YES_THRESHOLD_SECONDS = 10; // >10s => YES, <=10s => NO
+    const SWIPE_MIN_PX = 70;          // minimum horizontal movement to count as swipe
+    const SWIPE_MAX_ANGLE_RATIO = 0.7; // abs(dy) must be <= ratio*abs(dx) to count as horizontal swipe
+
+    // Assign codes 0..11 (fits in 4 bits).
+    const fruitCodes = new Map(fruits.map((f, i) => [f, i]));
+
+    // --- STATE ---
+    let pageIndex = -1;    // -1 = intro, 0..3 = questions, 4 = result
+    let answerCode = 0;
+
+    let pageStartMs = 0;
+    let timerInterval = null;
+
+    // swipe tracking
+    let dragging = false;
+    let startX = 0, startY = 0;
+
+    const app = document.getElementById("app");
+    const swipeOverlay = document.getElementById("swipeOverlay");
+
+    function subsetForBit(bitIndex) {
+      return fruits.filter(f => ((fruitCodes.get(f) >> bitIndex) & 1) === 1);
+    }
+
+    function clearTimer() {
+      if (timerInterval) {
+        clearInterval(timerInterval);
+        timerInterval = null;
+      }
+    }
+
+    function startPageTimer() {
+      pageStartMs = Date.now();
+      clearTimer();
+      timerInterval = setInterval(() => {
+        const elapsed = (Date.now() - pageStartMs) / 1000;
+        const pill = document.getElementById("elapsedPill");
+        if (pill) pill.textContent = `Time on page: ${elapsed.toFixed(1)}s`;
+      }, 100);
+    }
+
+    function computeYesNoFromTime() {
+      const elapsedSeconds = (Date.now() - pageStartMs) / 1000;
+      const isYes = elapsedSeconds > YES_THRESHOLD_SECONDS;
+      return { isYes, elapsedSeconds };
+    }
+
+    function attachSwipeHandlers() {
+      // We attach to the card area (#app) for swipe gestures.
+      // Use Pointer Events so it works for mouse + touch.
+      app.onpointerdown = (e) => {
+        // Only handle when we're on question pages.
+        if (pageIndex < 0 || pageIndex >= TOTAL_PAGES) return;
+        dragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        app.setPointerCapture?.(e.pointerId);
+      };
+
+      app.onpointermove = (e) => {
+        if (!dragging) return;
+        // No visual drag needed; just tracking.
+      };
+
+      app.onpointerup = (e) => {
+        if (!dragging) return;
+        dragging = false;
+
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+
+        const absDx = Math.abs(dx);
+        const absDy = Math.abs(dy);
+
+        // Check it's a mostly-horizontal swipe with enough distance
+        const isHorizontal = absDx >= SWIPE_MIN_PX && absDy <= absDx * SWIPE_MAX_ANGLE_RATIO;
+
+        if (isHorizontal) {
+          handleAdvance(); // swipe left or right both advance
+        }
+      };
+
+      app.onpointercancel = () => { dragging = false; };
+
+      // Keyboard fallback: Space/Enter advances
+      window.onkeydown = (e) => {
+        if (pageIndex < 0 || pageIndex >= TOTAL_PAGES) return;
+        if (e.key === " " || e.key === "Enter") {
+          e.preventDefault();
+          handleAdvance();
+        }
+      };
+    }
+
+    function renderIntro() {
+      clearTimer();
+      swipeOverlay.textContent = "";
+
+      pageIndex = -1;
+      answerCode = 0;
+
+      app.innerHTML = `
+        <h1>Think of a Fruit</h1>
+        <p>Pick <b>one</b> fruit from this list and keep it in your head.</p>
+        <p>You’ll see 4 subsets. To answer each question, <b>swipe</b> to continue:</p>
+        <div class="hint">
+          <div><b>How your swipe decides the answer</b></div>
+          <div>Stay on the subset for <b>more than ${YES_THRESHOLD_SECONDS} seconds</b> → counts as <b>YES</b>.</div>
+          <div>Swipe in <b>${YES_THRESHOLD_SECONDS} seconds or less</b> → counts as <b>NO</b>.</div>
+          <div style="margin-top:8px;">Then swipe left or right to go to the next subset.</div>
+        </div>
+
+        <div class="grid" aria-label="Fruit options">
+          ${fruits.map(f => `<div class="item">${f}</div>`).join("")}
+        </div>
+
+        <div class="btnRow">
+          <button id="startBtn">Start</button>
+        </div>
+        <p style="font-size:13px;color:#555;margin-top:10px;">
+          Desktop: drag left/right (or press Space/Enter) to advance.
+        </p>
+      `;
+
+      document.getElementById("startBtn").onclick = () => {
+        pageIndex = 0;
+        answerCode = 0;
+        renderQuestion();
+      };
+    }
+
+    function renderQuestion() {
+      const bitIndex = pageIndex;
+      const subset = subsetForBit(bitIndex);
+
+      // instructions line
+      swipeOverlay.textContent = "Swipe left or right to continue →";
+
+      app.innerHTML = `
+        <h1>Question ${pageIndex + 1} of ${TOTAL_PAGES}</h1>
+        <p>Is your fruit in this subset? (Don’t press anything—just swipe when you’re ready.)</p>
+
+        <div class="grid">
+          ${subset.map(f => `<div class="item">${f}</div>`).join("")}
+        </div>
+
+        <div class="timerRow">
+          <div class="pill" id="elapsedPill">Time on page: 0.0s</div>
+          <div class="pill">Rule: >${YES_THRESHOLD_SECONDS}s = YES</div>
+        </div>
+
+        <div class="progress">
+          <span>Swipe to go to next</span>
+          <span>Subset encodes your answer</span>
+        </div>
+
+        <div class="hint">
+          <b>Reminder:</b> If your fruit is here, you probably want to wait >${YES_THRESHOLD_SECONDS}s before swiping.
+          If it’s not here, swipe quickly (≤${YES_THRESHOLD_SECONDS}s).
+        </div>
+      `;
+
+      startPageTimer();
+    }
+
+    function handleAdvance() {
+      const { isYes, elapsedSeconds } = computeYesNoFromTime();
+
+      // Apply answer for this page (bit = pageIndex)
+      if (isYes) answerCode |= (1 << pageIndex);
+
+      // Move forward
+      pageIndex++;
+
+      if (pageIndex < TOTAL_PAGES) {
+        renderQuestion();
+      } else {
+        renderResult(elapsedSeconds, isYes);
+      }
+    }
+
+    function renderResult() {
+      clearTimer();
+      swipeOverlay.textContent = "";
+
+      const predicted = fruits.find(f => fruitCodes.get(f) === answerCode);
+
+      app.innerHTML = `
+        <h1>Prediction</h1>
+        <p>I think you were thinking of:</p>
+        <div class="result">${predicted ?? "No match 🤔"}</div>
+        <p style="font-size:13px;color:#555;">
+          (Your final code was <b>${answerCode}</b>.)
+          ${predicted ? "" : "This can happen if timing is close to the threshold. Try again and swipe clearly before/after 10 seconds."}
+        </p>
+        <div class="btnRow">
+          <button id="restartBtn">Play Again</button>
+        </div>
+      `;
+
+      document.getElementById("restartBtn").onclick = renderIntro;
+    }
+
+    // Init
+    renderIntro();
+    attachSwipeHandlers();
+  </script>
+</body>
+</html>
