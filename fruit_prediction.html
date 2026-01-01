@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Fruit Mind Reader (12-item Prediction)</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+    body { margin: 0; background: #f6f7fb; color: #111; }
+    .wrap { max-width: 720px; margin: 0 auto; padding: 24px; }
+    .card {
+      background: white; border-radius: 16px; padding: 20px;
+      box-shadow: 0 6px 18px rgba(0,0,0,.08);
+    }
+    h1 { font-size: 22px; margin: 0 0 12px; }
+    p { margin: 8px 0; line-height: 1.4; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+      gap: 10px;
+      margin: 16px 0 18px;
+    }
+    .item {
+      background: #f2f4ff;
+      border: 1px solid #e1e6ff;
+      border-radius: 12px;
+      padding: 10px;
+      text-align: center;
+      font-weight: 600;
+    }
+    .buttons { display: flex; gap: 10px; justify-content: center; margin-top: 10px; }
+    button {
+      border: 0; border-radius: 12px; padding: 12px 16px;
+      font-size: 16px; font-weight: 700; cursor: pointer;
+      min-width: 120px;
+    }
+    .yes { background: #1f7ae0; color: white; }
+    .no  { background: #e9edf3; color: #111; }
+    .small { font-size: 13px; color: #444; }
+    .progress { display:flex; justify-content:space-between; margin-top: 10px; color:#333; font-size: 13px; }
+    .result {
+      font-size: 28px;
+      font-weight: 900;
+      text-align: center;
+      padding: 16px;
+      background: #fff7d6;
+      border: 1px solid #ffe08a;
+      border-radius: 14px;
+      margin-top: 14px;
+    }
+    .restart { margin-top: 14px; display:flex; justify-content:center; }
+    .restart button { background:#111; color:#fff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card" id="app"></div>
+  </div>
+
+  <script>
+    // 12 preset fruits (you can change these to any 12 words).
+    const fruits = [
+      "Apple", "Banana", "Cherry", "Date",
+      "Grape", "Kiwi", "Lemon", "Mango",
+      "Orange", "Peach", "Pear", "Plum"
+    ];
+
+    // Assign each fruit a unique code from 0..11 (fits in 4 bits).
+    // 4 questions = 4 bits => up to 16 unique items.
+    // We'll use codes 0..11 and ignore 12..15.
+    const fruitCodes = new Map(fruits.map((f, i) => [f, i]));
+
+    // Each question corresponds to one bit (LSB to MSB).
+    // Page 1 asks about bit 0, page 2 bit 1, page 3 bit 2, page 4 bit 3.
+    const TOTAL_PAGES = 4;
+
+    let pageIndex = 0;      // 0..3
+    let answerCode = 0;     // reconstructed 4-bit code
+
+    const app = document.getElementById("app");
+
+    function subsetForBit(bitIndex) {
+      // Return fruits whose code has this bit set to 1
+      return fruits.filter(f => ((fruitCodes.get(f) >> bitIndex) & 1) === 1);
+    }
+
+    function renderIntro() {
+      app.innerHTML = `
+        <h1>Think of a Fruit</h1>
+        <p>Pick <b>one</b> fruit from this list and keep it in your head. I’ll show you 4 pages of fruit subsets.</p>
+        <p>On each page, click <b>Yes</b> if your fruit appears in the subset, otherwise click <b>No</b>.</p>
+        <div class="grid">
+          ${fruits.map(f => `<div class="item">${f}</div>`).join("")}
+        </div>
+        <div class="buttons">
+          <button class="yes" id="startBtn">Start</button>
+        </div>
+        <p class="small">Tip: Don’t change your fruit mid-way 🙂</p>
+      `;
+      document.getElementById("startBtn").onclick = () => {
+        pageIndex = 0;
+        answerCode = 0;
+        renderQuestion();
+      };
+    }
+
+    function renderQuestion() {
+      const bitIndex = pageIndex; // 0..3
+      const subset = subsetForBit(bitIndex);
+
+      app.innerHTML = `
+        <h1>Question ${pageIndex + 1} of ${TOTAL_PAGES}</h1>
+        <p>Is your fruit in this subset?</p>
+        <div class="grid">
+          ${subset.map(f => `<div class="item">${f}</div>`).join("")}
+        </div>
+        <div class="buttons">
+          <button class="yes" id="yesBtn">Yes</button>
+          <button class="no" id="noBtn">No</button>
+        </div>
+        <div class="progress">
+          <span>Page: ${pageIndex + 1}/${TOTAL_PAGES}</span>
+          <span>Answers build a code…</span>
+        </div>
+      `;
+
+      document.getElementById("yesBtn").onclick = () => handleAnswer(true);
+      document.getElementById("noBtn").onclick = () => handleAnswer(false);
+    }
+
+    function handleAnswer(isYes) {
+      // If user said "Yes", set that bit in the answerCode.
+      if (isYes) answerCode |= (1 << pageIndex);
+
+      pageIndex++;
+
+      if (pageIndex < TOTAL_PAGES) {
+        renderQuestion();
+      } else {
+        renderResult();
+      }
+    }
+
+    function renderResult() {
+      // Map the final code (0..15) back to a fruit if it exists.
+      const predicted = fruits.find(f => fruitCodes.get(f) === answerCode);
+
+      app.innerHTML = `
+        <h1>Prediction</h1>
+        <p>I think you were thinking of:</p>
+        <div class="result">${predicted ?? "Hmm… something went off (no match) 🤔"}</div>
+        <p class="small">
+          (Your answer code was <b>${answerCode}</b>.)
+          ${predicted ? "" : "Try again and make sure you answer based on whether your fruit appears in each subset."}
+        </p>
+        <div class="restart">
+          <button id="restartBtn">Play Again</button>
+        </div>
+      `;
+      document.getElementById("restartBtn").onclick = renderIntro;
+    }
+
+    // Start on intro screen
+    renderIntro();
+  </script>
+</body>
+</html>
